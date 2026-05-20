@@ -25,35 +25,48 @@ MSx utilizes a **Distributed Load** strategy to ensure real-time stability acros
 
 ---
 
-## 📡 Spectral Engineering: The Channel 9 "Sweet Spot"
+## 📡 Spectral Engineering: Synchronized Channel Hopping
 
-To prevent the Jx module from "self-jamming" the MSx control link, the GDx (ESP32-CAM) is reconfigured to operate on **Wi-Fi Channel 9**.
+Jx targets all three standard non-overlapping 2.4 GHz channels in rotation. A static GDx channel assignment — including the previously evaluated Ch 9 "sweet spot" — was found to be insufficient once the nRF24L01+ PA+LNA module was paired with a high-gain external antenna. The elevated Total Radiated Power (TRP) widened the spectral skirts of each transmission to the point where no single fixed channel maintained a reliable margin across all three Jx cycles.
 
-### **The Math: Coexistence via Spectral Gapping**
-The Jx effector targets standard non-overlapping Wi-Fi channels using an nRF24L01+ set to a **2MBPS data rate**, which creates an approximate **2MHz spread** per transmission.
+The solution is a **Synchronized Deterministic Channel Hop** — GDx mirrors Jx's EEPROM-driven rotation index and stays permanently one step ahead, guaranteeing a minimum 25 MHz center-to-center separation on every power cycle.
+
+### **Jx Effector — Target Frequencies**
+The Jx effector uses an nRF24L01+ at **RF24_2MBPS** with continuous `0xAA` pattern transmission.
 
 **Targeted Frequencies ($F = 2400 + \text{Register Value}$):**
 1. **Wi-Fi Ch 1:** 2412 MHz (Register 12)
 2. **Wi-Fi Ch 6:** 2437 MHz (Register 37)
 3. **Wi-Fi Ch 11:** 2462 MHz (Register 62)
 
-### **Comparative Gap Analysis: Why Ch 9 (Gap 6–11) vs. Gap 1–6?**
-While a gap exists between Channels 1 and 6, the selection of **Channel 9 (2452 MHz)** is mathematically superior for a high-bandwidth MJPEG stream.
+Jx stores its current channel index in **EEPROM address 0**, incrementing on every power cycle. The rotation is deterministic and persistent across power loss.
 
-#### **1. Spectral Clearance Comparison**
-* **The Ch 1–6 Gap (Center 2424 MHz):** Provides a **+2 MHz** margin from Ch 1 and a **+3 MHz** margin from Ch 6.
-* **The Ch 9 Sweet Spot (2452 MHz):** Provides a massive **+5 MHz** safety margin from the high-power Ch 6 interference.
-* **Verdict:** The 5MHz margin provides 2.5x more spectral isolation, significantly reducing Adjacent Channel Interference (ACI).
+### **GDx C2 Gateway — Hop Logic**
+GDx (ESP32-CAM) maintains a parallel index in **ESP32 NVS (Non-Volatile Storage)**, incrementing in lockstep with Jx on every shared power cycle. The AP channel is selected from an offset table that ensures GDx is never on the same channel Jx is currently targeting.
 
-#### **2. Power Density & SINR Management**
-We optimize the **Signal-to-Interference-plus-Noise Ratio (SINR)** by exploiting Wi-Fi's native resilience:
-* **Asymmetric Protection:** While Ch 9's edge sits at $2462\text{ MHz}$ (Ch 11), it isolates the **critical center frequency** and the **entire lower sideband** in a "Quiet Zone".
-* **OFDM Resilience:** Wi-Fi can survive edge interference via Forward Error Correction (FEC). In contrast, the narrow Ch 1–6 gap "squeezes" the signal from both sides, which would lead to catastrophic video jitter.
+**Hop Table:**
 
-#### **3. Antenna Resonance & Physics**
-Standard 2.4GHz "rubber ducky" antennas are typically tuned for a center resonant frequency of **2450 MHz**.
-* **Wavelength Calculation:** $\lambda = \frac{c}{f} \approx \frac{3 \times 10^8}{2.45 \times 10^9} \approx 12.24 \text{ cm}$.
-* **Resonance:** $2452\text{ MHz}$ (Channel 9) aligns almost perfectly with the antenna's design center, ensuring a lower **Standing Wave Ratio (SWR)** and higher effective radiated power compared to Channel 1 ($2412\text{ MHz}$).
+| Power Cycle | Jx EEPROM Index | Jx Targets | GDx NVS Index | GDx AP Channel | Separation |
+| :---: | :---: | :---: | :---: | :---: | :---: |
+| 0 (first boot) | 0 | Ch 1 — 2412 MHz | 0 | **Ch 6 — 2437 MHz** | 25 MHz |
+| 1 | 1 | Ch 6 — 2437 MHz | 1 | **Ch 11 — 2462 MHz** | 25 MHz |
+| 2 | 2 | Ch 11 — 2462 MHz | 2 | **Ch 1 — 2412 MHz** | 50 MHz |
+| 3 | 0 | Ch 1 — 2412 MHz | 0 | **Ch 6 — 2437 MHz** | loops |
+
+**Key implementation details:**
+* No wiring between Jx and GDx is required. Synchronization is achieved purely through shared power — both devices boot simultaneously from the same LiPo source, read their respective persistent counters, and select their channel independently.
+* GDx uses `AP_CHANNELS[] = {6, 11, 1}` — index N of this array always resolves to the channel Jx is **not** targeting at index N.
+* The same out-of-range guard (`>= NUM_CHANNELS → clamp to 0`) used in Jx's EEPROM logic is mirrored in GDx's NVS read to prevent desync on corrupted storage.
+* HT20 (20 MHz) bandwidth is enforced on the GDx AP via `esp_wifi_set_bandwidth()` to minimize the GDx occupied footprint.
+
+### **Visual Channel Identification**
+GDx blinks its camera flash LED on boot to confirm the active AP channel, mirroring Jx's onboard LED pattern:
+
+| Flash Blinks | GDx AP Channel | Jx Targeting |
+| :---: | :---: | :---: |
+| 1 blink | Ch 1 — 2412 MHz | Ch 11 |
+| 2 blinks | Ch 6 — 2437 MHz | Ch 1 |
+| 3 blinks | Ch 11 — 2462 MHz | Ch 6 |
 
 ---
 
